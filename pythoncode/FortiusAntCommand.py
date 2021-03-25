@@ -203,6 +203,7 @@ class CommandLineVariables(object):
            parser.add_argument('-A', dest='A_IgnoredIfDefined',                         help=argparse.SUPPRESS, required=False, action='store_true')
         if UseBluetooth:
            parser.add_argument('-b', dest='ble',                                        help=constants.help_b,  required=False, action='store_true')
+           parser.add_argument('-S', dest='steering',                                   help=constants.help_S,  required=False, action='store_true')
         else:
            pass # If -b is requested but not available, then an error is appropriate
         parser.add_argument   ('-B', dest='DeviceNumberBase',   metavar='0...65535',    help=constants.help_B,  required=False, default=False, type=int)
@@ -299,6 +300,7 @@ class CommandLineVariables(object):
         self.autostart              = self.args.autostart
         if UseBluetooth:
             self.ble                = self.args.ble
+            self.steering           = self.args.steering
         if UseGui:
             self.gui                = self.args.gui
         self.homeTrainer            = self.args.homeTrainer # Exersize Bike
@@ -327,6 +329,11 @@ class CommandLineVariables(object):
 
         if (self.homeTrainer or self.manual or self.manualGrade) and self.SimulateTrainer:
             logfile.Console("-e/-m/-M and -s both specified, most likely for program test purpose")
+
+        if UseBluetooth:
+            if self.steering and not self.ble:
+                logfile.Console("--steering is specified without -b. Steering requires Bluetooth, forcing it on")
+                self.ble = True
 
         #-----------------------------------------------------------------------
         # Get DeviceNumberBase
@@ -684,6 +691,7 @@ class CommandLineVariables(object):
                         (self.RunoffMaxSpeed, self.RunoffDip, self.RunoffMinSpeed, self.RunoffTime, self.RunoffPower) )
             if      self.args.simulate:      logfile.Console("-s")
 #scs        if v or self.args.scs:           logfile.Console("-S %s" % self.scs )
+            if      self.args.steering:      logfile.Console("-S")
             if v or self.args.TacxType:      logfile.Console("-t %s" % self.TacxType)
 #           if v or self.args.Transmission != constants.Transmission:
             if v or self.args.Transmission:

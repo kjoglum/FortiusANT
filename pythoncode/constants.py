@@ -88,6 +88,7 @@ help_n = "Do not calibrate before start."
 help_p = "Adjust target Power by multiplying by this factor for static calibration."
 help_r = "Target Resistance = Target Power (to create power curve)."
 help_s = "Simulate trainer to test ANT+ connectivity."
+help_S = "(EXPERIMENTAL) Use Tacx Steering interface over BLE"
 help_t = "Specify Tacx Type; if not specified, USB-trainers will be detected automatically."
 help_T = "Transmission, default value = " + Transmission
 help_x = "Export TCX file to upload into Strava, Sporttracks, Training peaks."

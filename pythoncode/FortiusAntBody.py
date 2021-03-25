@@ -253,7 +253,7 @@ CycleTimeANT  = 0.25
 # Initialize globals
 # ------------------------------------------------------------------------------
 def Initialize(pclv):
-    global clv, AntDongle, TacxTrainer, tcx, bleCTP, rpi
+    global clv, AntDongle, TacxTrainer, tcx, bleCTP, rpi, CalibSteeringRight, CalibSteeringMiddle, CalibSteeringLeft, CalibSteeringStarted, CalibSteeringEnded
     clv         = pclv
     AntDongle   = None
     TacxTrainer = None
@@ -262,6 +262,11 @@ def Initialize(pclv):
     rpi.DisplayState(constants.faStarted)
     if clv.exportTCX: tcx = TCXexport.clsTcxExport()
     bleCTP = bleDongle.clsBleCTP(clv)
+    CalibSteeringRight = 0
+    CalibSteeringMiddle = 0
+    CalibSteeringLeft = 0
+    CalibSteeringStarted = False
+    CalibSteeringEnded = False
 
 # ------------------------------------------------------------------------------
 # The opposite, hoping that this will properly release USB device, see #203
@@ -529,7 +534,6 @@ def Runoff(FortiusAntGui):
             if not rolldown:
                 FortiusAntGui.SetMessages(Tacx=ShortMessage + "Warm-up for some minutes, then cycle to above {}km/hr" \
                                                     .format(clv.RunoffMaxSpeed))
-
                 if TacxTrainer.SpeedKmh > clv.RunoffMaxSpeed:      # SpeedKmh above 40, start rolldown
                     FortiusAntGui.SetMessages(Tacx=ShortMessage + "STOP PEDALLING")
                     rolldown = True
@@ -627,7 +631,56 @@ def Runoff(FortiusAntGui):
         logfile.Console("Pedal Stroke Analysis: #samples = %s, #equal = %s (%3.0f%%)" % \
                     (PowerCount, PowerEqual, PowerEqual * 100 /PowerCount))
     return True
-    
+
+# ------------------------------------------------------------------------------
+# A x i s 2 A n g l e
+# ------------------------------------------------------------------------------
+# input:        raw steering axis data from the Tacx
+#
+# Description:  Convert the raw steering axis data to an angle using the
+#               steering calibration values.
+#
+# Returns:      The steering angle in degrees
+# ------------------------------------------------------------------------------
+def Axis2Angle(raw_axis, calib_right, calib_middle, calib_left):
+    if debug.on(debug.Function):
+        logfile.Write(f'Steering Raw axis: {raw_axis}')
+        logfile.Write(f'Steering right calibration: {calib_right}')
+        logfile.Write(f'Steering middle calibration: {calib_middle}')
+        logfile.Write(f'Steering left calibration: {calib_left}')
+
+    if raw_axis == 0x0a0d:
+        # No steering device connected, return a neutral angle.
+        angle = 0.0
+    elif calib_middle == calib_right:
+        # Calibration values for middle and right cannot be the same, return a neutral angle.
+        angle = 0.0
+    else:
+        # Steering goes from -45 degrees left to 45 degrees right, 0 degrees is the center
+        # Calibration is done taking three points (logaritmic scale):
+        # - steer full right
+        # - steer center
+        # - steer left
+
+        step_right = (calib_middle - calib_right) / 45
+        step_left = (calib_left - calib_middle) / 45
+
+        if raw_axis <= calib_middle:
+            angle = (calib_middle - raw_axis) / step_right
+        elif raw_axis > calib_middle:
+            angle = (calib_middle - raw_axis) / step_left
+        else:
+            angle = 0
+
+        # Only start steering at 5 degress, the center steering is not always 
+        # returning to the same point after steering right or left causing the
+        # idle steering not to be 0.0 degrees. Also to prevent unintentional
+        # steering due to rider movements causing steering frame movement
+        if abs(angle) < 5:
+            angle = 0.0
+
+    return angle
+
 # ------------------------------------------------------------------------------
 # T a c x 2 D o n g l e
 # ------------------------------------------------------------------------------
@@ -660,7 +713,7 @@ def Tacx2Dongle(FortiusAntGui):
     return rtn
 
 def Tacx2DongleSub(FortiusAntGui, Restart):
-    global clv, AntDongle, TacxTrainer, tcx, bleCTP, manualMsg
+    global clv, AntDongle, TacxTrainer, tcx, bleCTP, manualMsg, CalibSteeringRight, CalibSteeringMiddle, CalibSteeringLeft, CalibSteeringStarted, CalibSteeringEnded
 
     assert(AntDongle)                       # The class must be created
     assert(TacxTrainer)                     # The class must be created
@@ -822,7 +875,7 @@ def Tacx2DongleSub(FortiusAntGui, Restart):
     clv.PowerFactor = 1
 
     #---------------------------------------------------------------------------
-    # Calibrate trainer
+    # Calibrate trainer and steering frame (if in use)
     #
     # Note, that there is no ANT+ loop active here!
     # - Calibration is currently implemented for Tacx Fortius (motorbrake) only.
@@ -843,6 +896,11 @@ def Tacx2DongleSub(FortiusAntGui, Restart):
     antEvent              = False
     pedalEvent            = False
     TacxTrainer.tacxEvent = False
+
+    SteerRight      = True
+    SteerMiddle     = True
+    SteerLeft       = True
+    LogSteeringCalibration = True
 
     if clv.calibrate and TacxTrainer.CalibrateSupported():
         FortiusAntGui.SetMessages(Tacx="* * * * G I V E   A   P E D A L   K I C K   T O   S T A R T   C A L I B R A T I O N * * * *")
@@ -900,6 +958,50 @@ def Tacx2DongleSub(FortiusAntGui, Restart):
                     if debug.on(debug.Function):
                         logfile.Write('Tacx2Dongle; start calibration')
                     StartPedaling = False
+                    StartPedalTime = time.time()
+                #Calibrate steering frame, if in use
+                if clv.steering:
+                    # Calibrate steering while calibrating resistance
+                    if SteerRight and StartPedalTime and time.time() - StartPedalTime > 5:
+                        if LogSteeringCalibration:
+                            FortiusAntGui.SetMessages(Tacx="* * * * C A L I B R A T I N G   (Do not pedal) * * * * (Steer right) * * * *")
+                            if debug.on(debug.Function):
+                                logfile.Write('Tacx2Dongle; calibrate steering right')
+                            LogSteeringCalibration = False
+
+                        if time.time() - StartPedalTime > 8:
+                            SteerRight = False
+                            LogSteeringCalibration = True  # For next steering action
+                            CalibSteeringRight = TacxTrainer.Axis
+                            logfile.Write(f'Tacx2Dongle; calibrate steering right: {CalibSteeringRight}')
+
+                    if SteerMiddle and StartPedalTime and time.time() - StartPedalTime > 10:
+                        if LogSteeringCalibration:
+                            FortiusAntGui.SetMessages(Tacx="* * * * C A L I B R A T I N G   (Do not pedal) * * * * (Steer middle) * * * *")
+                            if debug.on(debug.Function):
+                                logfile.Write('Tacx2Dongle; calibrate steering middle')
+                            LogSteeringCalibration = False
+                        
+                        if time.time() - StartPedalTime > 13:
+                            SteerMiddle = False
+                            LogSteeringCalibration = True  # For next steering action
+                            CalibSteeringMiddle = TacxTrainer.Axis
+                            logfile.Write(f'Tacx2Dongle; calibrate steering middle: {CalibSteeringMiddle}')
+
+                    if SteerLeft and StartPedalTime and time.time() - StartPedalTime > 15:
+                        if LogSteeringCalibration:
+                            FortiusAntGui.SetMessages(Tacx="* * * * C A L I B R A T I N G   (Do not pedal) * * * * (Steer left) * * * *")
+                            if debug.on(debug.Function):
+                                logfile.Write('Tacx2Dongle; calibrate steering left')
+                            LogSteeringCalibration = False
+                                                        
+                        if time.time() - StartPedalTime > 18:
+                            SteerLeft = False
+                            CalibSteeringLeft = TacxTrainer.Axis
+                            logfile.Write(f'Tacx2Dongle; calibrate steering middle: {CalibSteeringLeft}')
+                            FortiusAntGui.SetMessages(Tacx="* * * * C A L I B R A T I N G   (Do not pedal) * * * *")
+                            if debug.on(debug.Function):
+                                logfile.Write('Tacx2Dongle; continue calibration')
 
                 FortiusAntGui.SetValues(TacxTrainer.SpeedKmh, int(CountDown / CountDownX), \
                         round(TacxTrainer.CurrentPower * -1,0), \
@@ -944,6 +1046,95 @@ def Tacx2DongleSub(FortiusAntGui, Restart):
             #-------------------------------------------------------------------
             SleepTime = 0.25 - (time.time() - StartTime)
             if SleepTime > 0: time.sleep(SleepTime)
+    except KeyboardInterrupt:
+        logfile.Console ("Stopped")
+    except Exception as e:
+        logfile.Console ("Calibration stopped with exception: %s" % e)
+
+    #-----------------------------------------------------------------------------------
+    # Calibrate steering frame (if present, with trainer not compatible for calibration)
+    #-----------------------------------------------------------------------------------
+    if clv.steering and not TacxTrainer.CalibrateSupported():
+        FortiusAntGui.SetMessages(Tacx="* * * * P E D A L   T O   C A L I B R A T E  S T E E R I N G * * * *")
+        if debug.on(debug.Function):
+            logfile.Write('Tacx2Dongle; start pedaling for steering calibration')
+                
+    try:
+    # if True:
+        while         FortiusAntGui.RunningSwitch == True \
+            and clv.steering \
+            and CalibSteeringEnded == False \
+            and not TacxTrainer.Buttons == usbTrainer.CancelButton \
+            and not Restart:
+            #-------------------------------------------------------------------
+            # Receive / Send trainer
+            #-------------------------------------------------------------------
+            TacxTrainer.tacxEvent = False
+            TacxTrainer.Refresh(True, usbTrainer.modeCalibrate)
+
+            FortiusAntGui.SetLeds(antEvent, bleEvent, pedalEvent, None, TacxTrainer.tacxEvent)
+            rpi.SetLeds          (antEvent, bleEvent, pedalEvent, None, TacxTrainer.tacxEvent)
+            if rpi.CheckShutdown(FortiusAntGui): FortiusAntGui.RunningSwitch = False
+
+            if rpi.buttonUp and rpi.buttonDown: TacxTrainer.Buttons = usbTrainer.CancelButton
+            rpi.buttonUp   = False
+            rpi.buttonDown = False
+
+            #----------------------------------------------------------------
+            # Steering calibration is started by pedaling
+            #----------------------------------------------------------------
+            if CalibSteeringStarted or TacxTrainer.CurrentResistance > 0 and TacxTrainer.SpeedKmh > 0:
+                if StartPedaling:
+                    FortiusAntGui.SetMessages(Tacx="* * * * C A L I B R A T E   S T E E R I N G  S T A R T E D* * * *")
+                    if debug.on(debug.Function):
+                        logfile.Write('Tacx2Dongle; start calibration')
+                    CalibSteeringStarted = True
+                    StartPedaling = False
+                    StartPedalTime = time.time()
+
+                if SteerRight and StartPedalTime and time.time() - StartPedalTime > 10:
+                    if LogSteeringCalibration:
+                        FortiusAntGui.SetMessages(Tacx="* * * * C A L I B R A T I N G - S t e e r  R i g h t * * * * ")
+                        if debug.on(debug.Function):
+                            logfile.Write('Tacx2Dongle; calibrate steering right')
+                        LogSteeringCalibration = False
+
+                    if time.time() - StartPedalTime > 15:
+                        SteerRight = False
+                        LogSteeringCalibration = True  # For next steering action
+                        CalibSteeringRight = TacxTrainer.Axis
+                        FortiusAntGui.SetMessages(Tacx="* * * * Calibrating Right Value: {} * * * *" \
+                                            .format(CalibSteeringRight))
+
+                if SteerMiddle and StartPedalTime and time.time() - StartPedalTime > 20:
+                    if LogSteeringCalibration:
+                        FortiusAntGui.SetMessages(Tacx="* * * * C A L I B R A T I N G - S t e e r  M i d d l e * * * *")
+                        if debug.on(debug.Function):
+                            logfile.Write('Tacx2Dongle; calibrate steering middle')
+                        LogSteeringCalibration = False
+                                                    
+                    if time.time() - StartPedalTime > 25:
+                        SteerMiddle = False
+                        LogSteeringCalibration = True  # For next steering action
+                        CalibSteeringMiddle = TacxTrainer.Axis
+                        FortiusAntGui.SetMessages(Tacx="* * * * Calibrating Middle Value: {} * * * *" \
+                                            .format(CalibSteeringMiddle))
+
+                if SteerLeft and StartPedalTime and time.time() - StartPedalTime > 30:
+                    if LogSteeringCalibration:
+                        FortiusAntGui.SetMessages(Tacx="* * * * C A L I B R A T I N G - S t e e r  L e f t * * * *")
+                        if debug.on(debug.Function):
+                            logfile.Write('Tacx2Dongle; calibrate steering left')
+                        LogSteeringCalibration = False
+                                                    
+                    if time.time() - StartPedalTime > 35:
+                        SteerLeft = False
+                        CalibSteeringLeft = TacxTrainer.Axis
+                        FortiusAntGui.SetMessages(Tacx="* * * * Calibrating Left Value: {} * * * *" \
+                                            .format(CalibSteeringLeft))
+                        CalibSteeringEnded = True
+                        time.sleep(5)
+
     except KeyboardInterrupt:
         logfile.Console ("Stopped")
     except Exception as e:
@@ -1333,11 +1524,12 @@ def Tacx2DongleSub(FortiusAntGui, Restart):
                 #
                 # When data is received, TacxTrainer parameters are copied from
                 # the bleCTP object.
-                #---------------------------------------------------------------
+                #----------------------------e-----------------------------------
                 if clv.ble:
+                    steering_angle = Axis2Angle(TacxTrainer.Axis, CalibSteeringRight, CalibSteeringMiddle, CalibSteeringLeft)
                     bleCTP.SetAthleteData(HeartRate)
                     bleCTP.SetTrainerData(TacxTrainer.SpeedKmh, \
-                                    TacxTrainer.Cadence, TacxTrainer.CurrentPower)
+                                    TacxTrainer.Cadence, TacxTrainer.CurrentPower, steering_angle)
                     if bleCTP.Refresh():
                         bleEvent = True
                         CTPcommandTime = time.time()
