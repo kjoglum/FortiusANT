@@ -166,6 +166,7 @@ class CommandLineVariables(object):
            parser.add_argument('-A','--pdaNotAvailable',    help=argparse.SUPPRESS, required=False, action='store_true')
         if UseBluetooth:
            parser.add_argument('-b','--ble',                help=constants.help_b,  required=False, action='store_true')
+           parser.add_argument(     '--steering',  help='(EXPERIMENTAL) Use Tacx Steering interface over BLE', required=False, action='store_true')
         else:
            # If -b is requested but not available, then an error is appropriate
            pass
@@ -258,6 +259,7 @@ class CommandLineVariables(object):
         self.autostart              = self.args.autostart
         if UseBluetooth:
             self.ble                = self.args.ble
+            self.steering           = self.args.steering
         if UseGui:
             self.gui                = self.args.gui
         self.homeTrainer            = self.args.homeTrainer # Exersize Bike
@@ -286,6 +288,11 @@ class CommandLineVariables(object):
 
         if (self.homeTrainer or self.manual or self.manualGrade) and self.SimulateTrainer:
             logfile.Console("-e/-m/-M and -s both specified, most likely for program test purpose")
+
+        if UseBluetooth:
+            if self.steering and not self.ble:
+                logfile.Console("--steering is specified without -b. Steering requires Bluetooth, forcing it on")
+                self.ble = True
 
         #-----------------------------------------------------------------------
         # Get DeviceNumberBase
